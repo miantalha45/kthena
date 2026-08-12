@@ -94,6 +94,27 @@ func TestGenerateWorkerPod_WithAnnotations(t *testing.T) {
 	assert.Equal(t, annotations, pod.Annotations)
 }
 
+func TestGenerateEntryPodPreservesReservedLabels(t *testing.T) {
+	ms := &workloadv1alpha1.ModelServing{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-ms", Namespace: "default"},
+	}
+	role := workloadv1alpha1.Role{
+		Name: "decode",
+		EntryTemplate: workloadv1alpha1.PodTemplateSpec{
+			Metadata: &workloadv1alpha1.Metadata{Labels: map[string]string{
+				workloadv1alpha1.EntryLabelKey: "false",
+				"team":                         "inference",
+			}},
+		},
+	}
+
+	pod := GenerateEntryPod(role, ms, "test-group", "test-role-0", "test-revision", "role-revision")
+
+	assert.Equal(t, "true", pod.Labels[workloadv1alpha1.EntryLabelKey],
+		"template metadata must not overwrite the controller-reserved entry label")
+	assert.Equal(t, "inference", pod.Labels["team"], "custom template labels must be preserved")
+}
+
 func TestSetCondition(t *testing.T) {
 	t.Run("All groups ready", func(t *testing.T) {
 		ms := &workloadv1alpha1.ModelServing{

@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -155,6 +156,9 @@ func addPodLabelAndAnnotation(pod *corev1.Pod, metadata *workloadv1alpha1.Metada
 			pod.Labels = make(map[string]string)
 		}
 		for k, v := range metadata.Labels {
+			if strings.HasPrefix(k, "modelserving.volcano.sh/") {
+				continue
+			}
 			pod.Labels[k] = v
 		}
 	}
