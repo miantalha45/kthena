@@ -126,8 +126,8 @@ func validateReservedTemplateLabels(metadata *workloadv1alpha1.Metadata, labelsP
 	}
 	var allErrs field.ErrorList
 	for key := range metadata.Labels {
-		if strings.HasPrefix(key, "modelserving.volcano.sh/") {
-			allErrs = append(allErrs, field.Forbidden(labelsPath.Key(key), "modelserving.volcano.sh labels are reserved for the controller"))
+		if workloadv1alpha1.IsControllerReservedPodLabel(key) {
+			allErrs = append(allErrs, field.Forbidden(labelsPath.Key(key), "label is reserved for the controller"))
 		}
 	}
 	return allErrs
