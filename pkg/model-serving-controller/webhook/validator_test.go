@@ -160,13 +160,21 @@ func TestValidateTemplateMetadataLabels(t *testing.T) {
 			wantError: "spec.template.roles[0].workerTemplate.metadata.labels[modelserving.volcano.sh/role]",
 		},
 		{
-			name: "allows non-reserved labels",
+			name: "rejects labels in reserved controller namespace",
 			role: workloadv1alpha1.Role{
 				EntryTemplate: workloadv1alpha1.PodTemplateSpec{
 					Metadata: &workloadv1alpha1.Metadata{Labels: map[string]string{
-						"team":                             "inference",
 						"modelserving.volcano.sh/rolename": "decode-instance",
 					}},
+				},
+			},
+			wantError: "spec.template.roles[0].entryTemplate.metadata.labels[modelserving.volcano.sh/rolename]",
+		},
+		{
+			name: "allows custom labels",
+			role: workloadv1alpha1.Role{
+				EntryTemplate: workloadv1alpha1.PodTemplateSpec{
+					Metadata: &workloadv1alpha1.Metadata{Labels: map[string]string{"team": "inference"}},
 				},
 			},
 		},

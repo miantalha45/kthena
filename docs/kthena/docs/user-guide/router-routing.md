@@ -248,9 +248,9 @@ spec:
     pdGroup:
       groupKey: "modelserving.volcano.sh/group-name"
       prefillLabels:
-        modelserving.volcano.sh/rolename: "P-instance"
+        role-name: "P-instance"
       decodeLabels:
-        modelserving.volcano.sh/rolename: "D-instance"
+        role-name: "D-instance"
   workloadPort:
     port: 8000
   model: "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"

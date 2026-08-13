@@ -102,9 +102,8 @@ func TestGenerateEntryPodPreservesReservedLabels(t *testing.T) {
 		Name: "decode",
 		EntryTemplate: workloadv1alpha1.PodTemplateSpec{
 			Metadata: &workloadv1alpha1.Metadata{Labels: map[string]string{
-				workloadv1alpha1.EntryLabelKey:     "false",
-				"team":                             "inference",
-				"modelserving.volcano.sh/rolename": "decode-instance",
+				workloadv1alpha1.EntryLabelKey: "false",
+				"team":                         "inference",
 			}},
 		},
 	}
@@ -114,8 +113,6 @@ func TestGenerateEntryPodPreservesReservedLabels(t *testing.T) {
 	assert.Equal(t, "true", pod.Labels[workloadv1alpha1.EntryLabelKey],
 		"template metadata must not overwrite the controller-reserved entry label")
 	assert.Equal(t, "inference", pod.Labels["team"], "custom template labels must be preserved")
-	assert.Equal(t, "decode-instance", pod.Labels["modelserving.volcano.sh/rolename"],
-		"non-reserved labels in the modelserving namespace must be preserved")
 }
 
 func TestSetCondition(t *testing.T) {
