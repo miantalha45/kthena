@@ -14,7 +14,7 @@ spec:
           metadata:
             labels:
               app: deepseek-r1-1-5b
-              role-name: "P-instance"
+              modelserving.volcano.sh/rolename: "P-instance"
           spec:
             containers:
               - name: leader
@@ -33,7 +33,7 @@ spec:
           metadata:
             labels:
               app: deepseek-r1-1-5b
-              role-name: "D-instance"
+              modelserving.volcano.sh/rolename: "D-instance"
           spec:
             containers:
               - name: leader

@@ -155,7 +155,7 @@ func addPodLabelAndAnnotation(pod *corev1.Pod, metadata *workloadv1alpha1.Metada
 			pod.Labels = make(map[string]string)
 		}
 		for k, v := range metadata.Labels {
-			if workloadv1alpha1.IsControllerReservedPodLabel(k) {
+			if _, exists := pod.Labels[k]; exists {
 				continue
 			}
 			pod.Labels[k] = v

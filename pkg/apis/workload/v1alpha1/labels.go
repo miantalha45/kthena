@@ -16,10 +16,6 @@ limitations under the License.
 
 package v1alpha1
 
-import "strings"
-
-const ModelServingLabelPrefix = "modelserving.volcano.sh/"
-
 const (
 	// ModelServingNameLabelKey is the pod label key for the model serving name.
 	ModelServingNameLabelKey = "modelserving.volcano.sh/name"
@@ -38,8 +34,19 @@ const (
 	RoleTemplateHashLabelKey = "modelserving.volcano.sh/role-template-hash"
 )
 
-// IsControllerReservedPodLabel reports whether a label is in the namespace
-// reserved for ModelServing controller-managed Pod labels.
+// IsControllerReservedPodLabel reports whether a label is managed by the
+// ModelServing controller.
 func IsControllerReservedPodLabel(key string) bool {
-	return strings.HasPrefix(key, ModelServingLabelPrefix)
+	switch key {
+	case ModelServingNameLabelKey,
+		GroupNameLabelKey,
+		RoleLabelKey,
+		RoleIDKey,
+		EntryLabelKey,
+		RevisionLabelKey,
+		RoleTemplateHashLabelKey:
+		return true
+	default:
+		return false
+	}
 }

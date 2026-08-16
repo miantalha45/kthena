@@ -160,7 +160,7 @@ func TestValidateTemplateMetadataLabels(t *testing.T) {
 			wantError: "spec.template.roles[0].workerTemplate.metadata.labels[modelserving.volcano.sh/role]",
 		},
 		{
-			name: "rejects labels in reserved controller namespace",
+			name: "allows non-conflicting labels in controller namespace",
 			role: workloadv1alpha1.Role{
 				EntryTemplate: workloadv1alpha1.PodTemplateSpec{
 					Metadata: &workloadv1alpha1.Metadata{Labels: map[string]string{
@@ -168,7 +168,6 @@ func TestValidateTemplateMetadataLabels(t *testing.T) {
 					}},
 				},
 			},
-			wantError: "spec.template.roles[0].entryTemplate.metadata.labels[modelserving.volcano.sh/rolename]",
 		},
 		{
 			name: "allows custom labels",
