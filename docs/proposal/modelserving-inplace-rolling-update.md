@@ -92,7 +92,7 @@ The design uses the existing control-plane boundaries rather than introducing a 
 | Legacy Pods | Recreate ungated Role instances before in-place update is allowed. Do not use an annotation-only fallback. |
 | Failure handling | Planned image restarts are suppressed. Unrelated failures use the existing RoleRecreate path. An invalid target image stays blocked and visible until the user corrects it or explicitly exits the strategy. |
 | Router cache | Existing prefix-cache eviction is reused. KV-cache-aware scores are fenced by a persistent per-Pod cache-valid-after timestamp. |
-| OpenKruise | Perform a short compatibility spike. Keep a Kthena-owned adapter boundary unless the upstream utility fits without importing controller ownership or unsafe semantics. |
+| OpenKruise | Perform a time-boxed utility compatibility spike. Keep a Kthena-owned adapter boundary unless the upstream utility fits without importing controller ownership or unsafe semantics. |
 
 #### Terms and invariants
 
@@ -288,12 +288,14 @@ For an active update:
 
 1. The controller records a durable Preparing state.
 2. The controller sets the Kthena gate to false.
-3. The router observes the NotReady Pod and removes it from scheduling candidates.
+3. The controller waits for or confirms router exclusion according to the agreed synchronization contract.
 4. The controller patches the target container images.
 5. The controller waits for runtime completion evidence.
 6. The controller sets the Kthena gate true only after every changed container is running at the target image and all normal containers are ready.
 
 The gate is created with the Pod. Kubernetes rejects adding readiness gates to an existing Pod, so a controller annotation alone cannot provide the same traffic-isolation guarantee.
+
+Router exclusion synchronization is a maintainer-review decision. Before patching a Role's images, the controller must ensure that the Role is no longer eligible for new Kthena Router selections. The initial implementation needs agreement on whether readiness-gate propagation is sufficient or whether an observable router or discovery acknowledgement is required.
 
 #### Legacy Pod gate bootstrap
 
@@ -363,6 +365,8 @@ The exact serialization can evolve with a versioned schema. It must satisfy thes
 - Use Pod UID and resource version checks to reject stale state.
 - Treat an unreadable or unsupported state annotation as a blocked update, emit a warning Event, and do not patch the image.
 
+Each in-place operation has a stable target revision and template identity. Reconciliation is idempotent: after controller restart, the controller reconstructs the Role operation from desired ModelServing state plus durable state on every Role Pod. Partial phase writes are safe to replay, and the controller does not depend on an in-memory phase as authority.
+
 The controller also stores a simple cache-freshness annotation:
 
 ~~~text
@@ -396,21 +400,22 @@ For one selected Role instance, the controller follows this sequence:
 1. Re-read every entry and worker Pod by name. Verify ModelServing ownership, Role labels, expected Pod count, absence of deletion timestamp, and the Kthena gate.
 2. Write an annotation with phase <code>Preparing</code>, target images, and pre-update container baselines. No image changes occur in this step.
 3. Set the Kthena readiness condition to false through the Pod status subresource.
-4. Bump <code>kv-cache-valid-after</code>.
-5. Patch Pod metadata and the named regular-container image fields together. Update state phase to <code>WaitingForRuntime</code>.
-6. Observe Pod updates. Confirm target images, target runtime identity, running state, and ContainersReady.
-7. Patch the target revision and Role template-hash labels only after every Pod in the Role has completed.
-8. Atomically update the datastore Role revision and Role template hash, set Role state to Running, and update ModelServing status.
-9. Set the Kthena readiness condition to true on every Role Pod.
-10. Wait until Kubernetes reports the whole Role Ready. Then select the next Role.
+4. Wait for or confirm router exclusion according to the agreed synchronization contract.
+5. Bump <code>kv-cache-valid-after</code>.
+6. Patch Pod metadata and the named regular-container image fields together. Update state phase to <code>WaitingForRuntime</code>.
+7. Observe Pod updates. Confirm target images, target runtime identity, running state, and ContainersReady.
+8. Mark the Role labels with the target revision and Role template hash only after every Pod in the Role has completed.
+9. Atomically update the datastore committed Role revision and Role template hash, set Role state to Running, and update ModelServing status.
+10. Set the Kthena readiness condition to true on every Role Pod.
+11. Wait until Kubernetes reports the whole Role Ready. Then select the next Role.
 
 The state is written before the readiness condition is set false. If the controller crashes after recording state but before isolation, it can resume or clear a safe Preparing attempt. If it crashes after isolation, the annotation tells the new controller why the Pod is NotReady.
 
 The update handler always checks persistent in-place state before the generic Ready and restart handlers:
 
 - An active state routes the event to in-place progress evaluation.
-- A completed state retains enough restart baseline to suppress the one expected image restart.
-- An unrelated restart or a restart count beyond the recorded allowance returns control to the generic RoleRecreate recovery path.
+- A restart is planned only while an active in-place operation exists for that container and the observed transition is consistent with the target image update. Declared target image, container ID, restart count, and observed image ID are considered together. Image ID is completion evidence rather than the sole immediate restart classifier.
+- An unrelated or repeated restart returns control to the generic RoleRecreate recovery path.
 - A lower restart count than the stored baseline means the Pod was recreated or the state is stale. The controller discards the stale record and handles the new Pod normally.
 
 #### Completion and restart semantics
@@ -427,7 +432,7 @@ The expected restart accounting is per container:
 
 | Container case | Allowed during active image update | Result after completion |
 | --- | --- | --- |
-| Changed regular container with a new runtime image or container ID | One kubelet-driven restart allowance | Preserve the completed restart baseline. A later increase invokes normal recovery. |
+| Changed regular container with an active operation and a transition consistent with the target image update | One planned restart | Preserve the completed restart baseline. A repeated or inconsistent restart invokes normal recovery. |
 | Changed regular container with repeated restart count before reaching Ready | No unlimited allowance | Mark the in-place operation Failed and keep the Role isolated. |
 | Unchanged regular container | No allowance | A restart is unrelated and follows generic recovery. |
 | Init container | No allowance and not eligible for image patch | A restart follows existing generic recovery. |
@@ -438,7 +443,7 @@ An invalid image or an image-pull failure is not a reason to repeatedly recreate
 - update the image to a new valid target; or
 - switch to an existing recreate rollout strategy as an explicit abort and fallback.
 
-When a user supplies a new image while a Role is blocked, the controller starts a fresh attempt from current container status and restart baselines. The gate remains false throughout the transition. This avoids a brief return to traffic between failed and corrected images.
+Target replacement during failure is a maintainer-review decision: if ModelServing changes to a new image while an in-place operation is blocked, should the controller supersede the active target directly, or require explicit fallback or cancellation before starting the new target?
 
 When a user exits InPlaceRollingUpdate while an operation is active, the controller emits <code>InPlaceUpdateAborted</code>, does not reopen the gate for the incomplete Role, and delegates to the selected existing rollout strategy. This is the escape hatch for an operator who prefers a recreate fallback.
 
@@ -460,9 +465,10 @@ The controller must not report an update as complete merely because the Pod spec
 
 For each Role:
 
-- The Role template hash and revision labels stay old while the Role is Preparing, WaitingForRuntime, or Failed.
-- The labels change only after all entry and worker Pods in the Role meet the completion criteria.
-- The datastore advances the Role revision and Role template hash in one locked operation after labels are updated.
+- The desired target revision and Role template hash are determined by the existing revision mechanics.
+- The Role stays marked at its committed current revision and template hash while it is Preparing, WaitingForRuntime, or Failed.
+- The Role is not marked current at the target revision and template hash until every selected entry and worker Pod meets the completion criteria.
+- The datastore advances the committed Role revision and Role template hash in one locked operation after labels are updated.
 
 For each ServingGroup:
 
@@ -516,6 +522,8 @@ The readiness gate integrates with the current router behavior:
 
 This protects future requests after informer propagation. It does not terminate or drain a request that was already proxied to the Pod, and it does not protect clients that bypass Kthena Router and address a Pod directly.
 
+The controller must not treat readiness-gate mutation as synchronous router exclusion. The implementation follows the router exclusion synchronization contract agreed during maintainer review before it patches a Role's images.
+
 The current headless Services use <code>PublishNotReadyAddresses: true</code>. Therefore, a readiness gate is not an internal Service-level connection drain for entry-worker traffic. The update treats a Role as unavailable to Kthena Router, but it does not claim to drain arbitrary internal TCP connections. This limit belongs in the user guide and release notes.
 
 The KV-cache-aware plugin needs extra work. It stores cache owners as pod-name.namespace in Redis and currently accepts a cached owner by name. An in-place restart keeps the same name, so a Redis record from the previous container process can look valid for up to the existing 24-hour freshness window.
@@ -529,6 +537,8 @@ The implementation adds a persistent freshness fence:
 5. A restarted runtime writes new cache records with fresh timestamps. Those records become eligible naturally.
 
 This design avoids a cluster-wide Redis scan and delete during an update. It works across router restarts because the threshold lives on the Pod. It also makes normal replacement Pods safer when they reuse a name.
+
+The freshness fence must use an ordering source that is trustworthy across controller and router state. If existing cache or runtime data can carry a runtime generation or container identity, that is preferable to relying solely on wall-clock timestamps.
 
 New router metrics:
 
@@ -555,7 +565,7 @@ The in-place update handler runs before the current generic <code>updatePod</cod
 
 OpenKruise has mature in-place update logic, including readiness-gate handling and persisted state. Its [public in-place utility](https://github.com/openkruise/kruise/blob/master/pkg/util/inplaceupdate/inplace_update.go) exposes generic-looking update methods, but it also depends on OpenKruise ControllerRevision adapters, Pod adapters, and OpenKruise API types.
 
-The project starts with a one-week compatibility spike:
+The project starts with a time-boxed one-week OpenKruise utility compatibility spike. This is an evaluation, not a dependency commitment:
 
 | Question | Acceptance criterion |
 | --- | --- |
@@ -632,7 +642,7 @@ The project is intentionally split into reviewable phases. Each phase has a demo
 
 | Weeks | Milestone | Deliverable and acceptance gate |
 | --- | --- | --- |
-| 1 | Design and compatibility spike | Confirm OpenKruise adapter feasibility, finalize API names, and record the dependency decision. |
+| 1 | Design and compatibility spike | Present the initial design for Kthena community review. Confirm the time-boxed OpenKruise utility compatibility direction, finalize API names, and record the dependency decision. |
 | 2 | API and admission | New enum, generated CRDs, old-object parsing, image-only validator tests, and API documentation. |
 | 3 to 4 | Pod lifecycle primitives | Gate injection, status-condition helper, durable state schema, RoleUpdating datastore state, RBAC changes, and controller restart reconstruction tests. |
 | 5 to 6 | Core image update | Deterministic Role selection, partition and budget accounting, image patch protocol, runtime completion checks, and label and revision commit. |
@@ -658,7 +668,7 @@ The unit test suite cannot prove kubelet image-restart behavior by itself. The i
 - Gate injection is idempotent and preserves unrelated user gates.
 - State transitions recover after retryable conflict and do not patch images while Preparing state is incomplete.
 - Completion requires the target image, new runtime identity, ContainersReady, and gate readiness.
-- Changed-container restart allowance is accepted once. Unchanged-container and repeated restarts reach generic recovery.
+- Planned, repeated, unrelated, stale-baseline, and delayed imageID or status-observation restart cases are classified correctly.
 - A lower restart count invalidates stale state.
 - Datastore reconstruction restores Updating from an active Pod annotation and commits revision plus Role template hash atomically.
 - KV-cache-aware filters a Redis record older than cache-valid-after and accepts a newer record.
@@ -667,7 +677,7 @@ The unit test suite cannot prove kubelet image-restart behavior by itself. The i
 
 - Use a fake Kubernetes client with reactors to assert the order: state annotation, gate false, image patch, completion, gate true.
 - Assert image patch requests modify only named regular-container image fields and controller-owned metadata.
-- Assert generic Pod recovery is not called for an expected active image restart.
+- Assert generic Pod recovery is not called for a planned active image restart, including delayed imageID or status observation.
 - Assert generic RoleRecreate is called for an unrelated container restart.
 - Assert a role never commits target labels before all its Pods complete.
 - Assert status stays UpdateInProgress while any unprotected Role is Updating or blocked.
@@ -685,7 +695,7 @@ Each E2E test uses a real kubelet because only a cluster proves that changing a 
 | Controller-manager restart | An active update resumes from annotations and does not duplicate or recreate a successful Pod. |
 | Invalid image then correction | Failed Role stays isolated and is not deleted. A corrected image completes. |
 | Explicit fallback | Switching to RoleRollingUpdate abandons in-place state and recreates the Role through existing behavior. |
-| Router integration | A false-gate Pod disappears from router candidates before a new request is scheduled. |
+| Router integration | A Role is confirmed excluded according to the agreed synchronization contract before its images are patched. |
 | Prefix cache and KV cache | Prefix mappings are evicted on NotReady. KV cache records older than cache-valid-after do not influence score. |
 | No deletion on successful in-place update | Watch events and verify no Pod deletion occurred for the selected Role. |
 
@@ -729,7 +739,7 @@ The current controller has no acknowledgement protocol with every router replica
 
 #### Fully adopt OpenKruise CloneSet or Advanced StatefulSet
 
-OpenKruise provides mature in-place mechanisms, but replacing ModelServing ownership would change Kthena APIs, Role semantics, PodGroup handling, and controller responsibilities. The compatibility spike evaluates reuse of a narrow utility, not migration to a separate workload owner.
+OpenKruise provides mature in-place mechanisms, but replacing ModelServing ownership would change Kthena APIs, Role semantics, PodGroup handling, and controller responsibilities. The time-boxed utility compatibility spike evaluates reuse of a narrow utility, not migration to a separate workload owner.
 
 #### Delete all Redis cache records for a restarted Pod
 
