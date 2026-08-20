@@ -118,6 +118,31 @@ func TestGenerateEntryPodPreservesReservedLabels(t *testing.T) {
 	assert.Equal(t, "inference", pod.Labels["team"], "custom template labels must be preserved")
 }
 
+func TestGenerateWorkerPodFiltersReservedTemplateLabels(t *testing.T) {
+	ms := &workloadv1alpha1.ModelServing{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-ms", Namespace: "default"},
+	}
+	role := workloadv1alpha1.Role{
+		Name: "decode",
+		WorkerTemplate: &workloadv1alpha1.PodTemplateSpec{
+			Metadata: &workloadv1alpha1.Metadata{Labels: map[string]string{
+				workloadv1alpha1.EntryLabelKey:     "true",
+				"modelserving.volcano.sh/rolename": "decode-instance",
+				"team":                             "inference",
+			}},
+		},
+	}
+	entryPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-entry", Namespace: "default"}}
+
+	pod := GenerateWorkerPod(role, ms, entryPod, "test-group", "test-role-0", 1, "test-revision", "role-revision")
+
+	assert.NotContains(t, pod.Labels, workloadv1alpha1.EntryLabelKey,
+		"template metadata must not mark a worker Pod as an entry Pod")
+	assert.Equal(t, "decode-instance", pod.Labels["modelserving.volcano.sh/rolename"],
+		"non-conflicting template labels must be preserved")
+	assert.Equal(t, "inference", pod.Labels["team"], "custom template labels must be preserved")
+}
+
 func TestSetCondition(t *testing.T) {
 	t.Run("All groups ready", func(t *testing.T) {
 		ms := &workloadv1alpha1.ModelServing{
