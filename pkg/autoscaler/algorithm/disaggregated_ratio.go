@@ -110,51 +110,55 @@ func EnforceRoleRatio(replicas map[string]int32, bounds map[string]ReplicaBounds
 	return finalReplicas, adjusted, currentRatio, nil
 }
 
-// closestRatioConstrainedReplicas returns the valid integer replica pair that
-// is closest to the requested pair. It minimizes scale down first, then scale
-// up, which preserves capacity whenever a valid scale-up-only repair exists.
+// closestRatioConstrainedReplicas returns the first feasible integer replica
+// pair from a deterministic search within the denominator range that can
+// intersect the numerator bounds.
 func closestRatioConstrainedReplicas(numerator, denominator int32, numeratorBounds, denominatorBounds ReplicaBounds, minRatio, maxRatio float64) (int32, int32, error) {
-	var bestNumerator, bestDenominator int32
-	var bestScaleDown, bestScaleUp int64
-	found := false
+	minimumDenominator := max(
+		int32(1),
+		denominatorBounds.Min,
+		ceilInt32(float64(numeratorBounds.Min)/maxRatio),
+	)
+	maximumDenominator := denominatorBounds.Max
+	if minRatio > 0 {
+		maximumDenominator = min(maximumDenominator, floorInt32(float64(numeratorBounds.Max)/minRatio))
+	}
+	if minimumDenominator > maximumDenominator {
+		return 0, 0, fmt.Errorf("ratio constraint has no feasible integer replica pair within role bounds")
+	}
 
-	for candidateDenominator := max(int32(1), denominatorBounds.Min); candidateDenominator <= denominatorBounds.Max; candidateDenominator++ {
+	candidateNumerator := func(candidateDenominator int32) (int32, bool) {
 		minimumNumerator := max(numeratorBounds.Min, ceilInt32(minRatio*float64(candidateDenominator)))
 		maximumNumerator := min(numeratorBounds.Max, floorInt32(maxRatio*float64(candidateDenominator)))
 		if minimumNumerator > maximumNumerator {
-			continue
+			return 0, false
 		}
+		return min(max(numerator, minimumNumerator), maximumNumerator), true
+	}
 
-		candidateNumerator := min(max(numerator, minimumNumerator), maximumNumerator)
-		scaleDown := replicaScaleDown(numerator, candidateNumerator) + replicaScaleDown(denominator, candidateDenominator)
-		scaleUp := replicaScaleUp(numerator, candidateNumerator) + replicaScaleUp(denominator, candidateDenominator)
-		if !found || scaleDown < bestScaleDown || (scaleDown == bestScaleDown && scaleUp < bestScaleUp) {
-			bestNumerator = candidateNumerator
-			bestDenominator = candidateDenominator
-			bestScaleDown = scaleDown
-			bestScaleUp = scaleUp
-			found = true
+	startingDenominator := min(max(denominator, minimumDenominator), maximumDenominator)
+	if float64(numerator)/float64(denominator) > maxRatio {
+		startingDenominator = min(max(
+			startingDenominator,
+			ceilInt32(float64(numerator)/maxRatio),
+		), maximumDenominator)
+	}
+
+	for candidateDenominator := startingDenominator; candidateDenominator <= maximumDenominator; candidateDenominator++ {
+		candidate, feasible := candidateNumerator(candidateDenominator)
+		if feasible {
+			return candidate, candidateDenominator, nil
 		}
 	}
 
-	if !found {
-		return 0, 0, fmt.Errorf("ratio constraint has no feasible integer replica pair within role bounds")
+	for candidateDenominator := startingDenominator - 1; candidateDenominator >= minimumDenominator; candidateDenominator-- {
+		candidate, feasible := candidateNumerator(candidateDenominator)
+		if feasible {
+			return candidate, candidateDenominator, nil
+		}
 	}
-	return bestNumerator, bestDenominator, nil
-}
 
-func replicaScaleDown(current, candidate int32) int64 {
-	if candidate < current {
-		return int64(current - candidate)
-	}
-	return 0
-}
-
-func replicaScaleUp(current, candidate int32) int64 {
-	if candidate > current {
-		return int64(candidate - current)
-	}
-	return 0
+	return 0, 0, fmt.Errorf("ratio constraint has no feasible integer replica pair within role bounds")
 }
 
 // ceilInt32 returns ceil(value) with int32 saturation.
